@@ -1,0 +1,92 @@
+---
+- name: Script for Rocky8 to Rocky9 migration
+  hosts: centosMachines
+  become: yes
+  become_user: root
+  gather_facts: yes
+  tasks:
+    - name: Clean up old packages
+      shell: |
+        rpm -qa | grep el7
+        rpm -qa | grep elevate
+        rpm -qa | grep leapp | xargs rpm -e
+        rm -fr /root/tmp_leapp_py3
+        dnf clean all
+
+    - name: Install ELevate repo
+      yum:
+        name: http://repo.almalinux.org/elevate/elevate-release-latest-el8.noarch.rpm
+        state: present
+
+    - name: Set exclusion rules for yum
+      command: yum config-manager --save --setopt exclude=''
+
+    - name: Install Leapp and related packages on Rocky Linux 8
+      yum:
+        name:
+          - leapp-upgrade
+          - leapp-data-rocky
+        state: present 
+
+    - name: Adjust firewalld settings
+      lineinfile:
+        path: /etc/firewalld/firewalld.conf
+        regexp: '^AllowZoneDrifting=.*'
+        line: 'AllowZoneDrifting=no'
+
+    - name: Remove unsupported network device setup file
+      shell: rm /etc/sysconfig/network-scripts/ifcfg-eth0
+      ignore_errors: yes
+
+    - name: Skip VDO device check requirement
+      ansible.builtin.command: leapp answer --add --section check_vdo.no_vdo_devices=True
+
+    - name: Remove make-devel
+      dnf:
+        name: make-devel
+        state: absent
+
+    - name: Remove rocky-logos
+      dnf:
+        name: rocky-logos
+        state: absent
+
+    - name: Re-run pre-upgrade checks to confirm fixes for Rocky Linux 9
+      shell: leapp preupgrade
+      register: preupgrade_check_result_rocky9
+      failed_when: "'Upgrade inhibited' in preupgrade_check_result_rocky9.stdout"
+
+    - name: Perform the upgrade from Rocky Linux 8 to Rocky Linux 9
+      shell: leapp upgrade
+      register: upgrade_result_rocky9
+      ignore_errors: yes
+
+    - name: Reboot to start the Rocky Linux 9 upgrade process
+      reboot:
+
+    - name: Verify upgrade to Rocky Linux 9
+      shell: cat /etc/redhat-release
+      register: os_release_rocky9
+      failed_when: "'Rocky Linux release 9' not in os_release_rocky9.stdout"
+
+    - name: Check for leftover packages from previous versions
+      shell: rpm -qa | grep el8
+      register: leftover_packages
+      ignore_errors: yes
+
+    - name: Remove leftover packages from Rocky Linux 8
+      shell: "{{ item }}"
+      loop: "{{ leftover_packages.stdout_lines }}"
+      when: leftover_packages.stdout_lines is defined
+
+    - name: Check logs and upgrade reports
+      shell: |
+        cat /var/log/leapp/leapp-report.txt
+        cat /var/log/leapp/leapp-upgrade.log
+      register: upgrade_logs
+      ignore_errors: yes
+
+    - name: Display upgrade logs
+      debug:
+        msg: "{{ upgrade_logs.stdout_lines }}"
+

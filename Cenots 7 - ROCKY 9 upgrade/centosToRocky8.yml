@@ -1,0 +1,48 @@
+---
+- name: Script for CentOS7 to Rocky9 migration
+  hosts: centosMachines
+  become: yes
+  become_user: root
+  gather_facts: yes
+  tasks:
+    - name: Install ELevate repo
+      yum:
+        name: http://repo.almalinux.org/elevate/elevate-release-latest-el7.noarch.rpm
+        state: present
+    - name: Install Leapp and related packages
+      yum:
+        name:
+          - leapp-upgrade
+          - leapp-data-rocky
+        state: present
+    - name: Remove pata_acpi kernel module
+      shell: rmmod pata_acpi
+      ignore_errors: yes
+    - name: Permit root login in sshd config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        line: 'PermitRootLogin yes'
+        create: yes
+    - name: Disable pam_pkcs11 module in PAM configuration
+      ansible.builtin.command: leapp answer --add --section  remove_pam_pkcs11_module_check.confirm=True
+    - name: Remove python36-six
+      yum:
+        name: python36-six
+        state: absent
+    - name: Set newest Kernel in use
+      ansible.builtin.command: grub2-set-default 'CentOS Linux (3.10.0-1160.119.1.el7.x86_64) 7 (Core)'
+    - name: Reboot System
+      reboot:
+    - name: Re-run pre-upgrade checks to confirm fixes
+      shell: leapp preupgrade
+      register: preupgrade_check_result
+      failed_when: "'Upgrade inhibited' in preupgrade_check_result.stdout"
+    - name: Perform the upgrade from CentOS 7 to Rocky Linux 8
+      shell: leapp upgrade
+      register: upgrade_result
+      ignore_errors: yes
+    - name: Reboot to start the upgrade process
+      reboot:
+    - name: Second Step
+      include_tasks:
+        file: Rocky8To9.yml
